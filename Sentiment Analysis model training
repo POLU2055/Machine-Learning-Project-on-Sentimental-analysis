@@ -1,0 +1,542 @@
+"""
+Sentiment Analysis ML Project
+==============================
+A comprehensive machine learning project comparing different classification algorithms
+for sentiment analysis on product reviews.
+
+This project demonstrates:
+- Data preprocessing and feature engineering
+- Multiple ML model implementations
+- Model evaluation and comparison
+- Hyperparameter tuning
+- Visualization of results
+- Best practices in ML workflow
+
+Author: ML Intern Project
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import LinearSVC
+from sklearn.metrics import (classification_report, confusion_matrix, 
+                             accuracy_score, precision_recall_fscore_support,
+                             roc_curve, auc, roc_auc_score)
+from sklearn.preprocessing import label_binarize
+import re
+import string
+from collections import Counter
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set random seed for reproducibility
+np.random.seed(42)
+
+class SentimentAnalysisProject:
+    """
+    Main class for the sentiment analysis project.
+    Handles data generation, preprocessing, model training, and evaluation.
+    """
+    
+    def __init__(self):
+        self.data = None
+        self.X_train = None
+        self.X_test = None
+        self.y_train = None
+        self.y_test = None
+        self.vectorizer = None
+        self.models = {}
+        self.results = {}
+        
+    def generate_sample_data(self, n_samples=2000):
+        """
+        Generate synthetic product review data for demonstration.
+        In a real project, you would load data from a file or API.
+        """
+        print("Generating sample product review data...")
+        
+        # Sample reviews for different sentiments
+        positive_templates = [
+            "This product is {adj1} and {adj2}! Highly recommend it.",
+            "Absolutely {adj1}! Best purchase I've made. {feature} works perfectly.",
+            "Very {adj1} with the quality. {feature} exceeded expectations.",
+            "Outstanding product! The {feature} is {adj1} and {adj2}.",
+            "Love this! So {adj1} and well worth the price. {feature} is great.",
+            "Fantastic! The {feature} is {adj1}. Would buy again.",
+            "Excellent quality and {adj1} performance. {feature} is impressive.",
+            "This is {adj1}! The {feature} makes it stand out."
+        ]
+        
+        negative_templates = [
+            "Terrible product. The {feature} is {adj1} and {adj2}.",
+            "Very {adj1}. The {feature} stopped working after a week.",
+            "Disappointed with this purchase. {feature} is completely {adj1}.",
+            "Poor quality. The {feature} is {adj1} and not worth the money.",
+            "Awful experience. {adj1} {feature} and terrible customer service.",
+            "Do not buy! The {feature} is {adj1} and {adj2}.",
+            "Waste of money. {feature} is {adj1} and broke quickly.",
+            "Horrible! The {feature} is {adj1}. Returning this immediately."
+        ]
+        
+        neutral_templates = [
+            "The product is okay. {feature} works as expected.",
+            "Average quality. The {feature} is decent but nothing special.",
+            "It's fine. {feature} does what it's supposed to do.",
+            "Acceptable product. The {feature} is neither good nor bad.",
+            "Mediocre. {feature} could be better but it's usable.",
+            "Standard quality. The {feature} meets basic requirements.",
+            "Nothing remarkable. {feature} is just average.",
+            "It works. The {feature} is acceptable for the price."
+        ]
+        
+        positive_adjs = ["amazing", "excellent", "great", "fantastic", "wonderful", 
+                        "superb", "outstanding", "brilliant", "impressive", "perfect"]
+        negative_adjs = ["terrible", "awful", "horrible", "poor", "disappointing",
+                        "broken", "defective", "useless", "cheap", "unreliable"]
+        neutral_adjs = ["average", "okay", "standard", "typical", "normal"]
+        
+        features = ["battery life", "screen quality", "build quality", "performance",
+                   "design", "camera", "speed", "durability", "interface", "value"]
+        
+        reviews = []
+        sentiments = []
+        
+        # Generate positive reviews
+        for _ in range(int(n_samples * 0.4)):
+            template = np.random.choice(positive_templates)
+            review = template.format(
+                adj1=np.random.choice(positive_adjs),
+                adj2=np.random.choice(positive_adjs),
+                feature=np.random.choice(features)
+            )
+            reviews.append(review)
+            sentiments.append('positive')
+        
+        # Generate negative reviews
+        for _ in range(int(n_samples * 0.4)):
+            template = np.random.choice(negative_templates)
+            review = template.format(
+                adj1=np.random.choice(negative_adjs),
+                adj2=np.random.choice(negative_adjs),
+                feature=np.random.choice(features)
+            )
+            reviews.append(review)
+            sentiments.append('negative')
+        
+        # Generate neutral reviews
+        for _ in range(n_samples - len(reviews)):
+            template = np.random.choice(neutral_templates)
+            review = template.format(
+                adj1=np.random.choice(neutral_adjs),
+                feature=np.random.choice(features)
+            )
+            reviews.append(review)
+            sentiments.append('neutral')
+        
+        # Create DataFrame
+        self.data = pd.DataFrame({
+            'review': reviews,
+            'sentiment': sentiments,
+            'review_length': [len(r.split()) for r in reviews],
+            'rating': [
+                np.random.randint(4, 6) if s == 'positive' 
+                else np.random.randint(1, 3) if s == 'negative'
+                else np.random.randint(3, 5)
+                for s in sentiments
+            ]
+        })
+        
+        # Shuffle the data
+        self.data = self.data.sample(frac=1, random_state=42).reset_index(drop=True)
+        
+        print(f"Generated {len(self.data)} reviews")
+        print(f"Sentiment distribution:\n{self.data['sentiment'].value_counts()}")
+        
+        return self.data
+    
+    def preprocess_text(self, text):
+        """
+        Clean and preprocess text data.
+        """
+        # Convert to lowercase
+        text = text.lower()
+        
+        # Remove punctuation
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        
+        # Remove extra whitespace
+        text = ' '.join(text.split())
+        
+        return text
+    
+    def prepare_data(self, test_size=0.2):
+        """
+        Prepare data for model training.
+        """
+        print("\nPreparing data...")
+        
+        # Preprocess reviews
+        self.data['cleaned_review'] = self.data['review'].apply(self.preprocess_text)
+        
+        # Split features and target
+        X = self.data['cleaned_review']
+        y = self.data['sentiment']
+        
+        # Train-test split
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=y
+        )
+        
+        # Vectorize text using TF-IDF
+        self.vectorizer = TfidfVectorizer(
+            max_features=1000,
+            ngram_range=(1, 2),
+            min_df=2,
+            max_df=0.8
+        )
+        
+        self.X_train_vec = self.vectorizer.fit_transform(self.X_train)
+        self.X_test_vec = self.vectorizer.transform(self.X_test)
+        
+        print(f"Training samples: {len(self.X_train)}")
+        print(f"Testing samples: {len(self.X_test)}")
+        print(f"Feature dimensions: {self.X_train_vec.shape[1]}")
+        
+    def train_models(self):
+        """
+        Train multiple classification models.
+        """
+        print("\nTraining models...")
+        
+        # Define models
+        self.models = {
+            'Naive Bayes': MultinomialNB(),
+            'Logistic Regression': LogisticRegression(max_iter=1000, random_state=42),
+            'Linear SVM': LinearSVC(random_state=42, max_iter=2000),
+            'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42),
+            'Gradient Boosting': GradientBoostingClassifier(n_estimators=100, random_state=42)
+        }
+        
+        # Train and evaluate each model
+        for name, model in self.models.items():
+            print(f"\nTraining {name}...")
+            
+            # Train model
+            model.fit(self.X_train_vec, self.y_train)
+            
+            # Predictions
+            train_pred = model.predict(self.X_train_vec)
+            test_pred = model.predict(self.X_test_vec)
+            
+            # Calculate metrics
+            train_acc = accuracy_score(self.y_train, train_pred)
+            test_acc = accuracy_score(self.y_test, test_pred)
+            
+            # Cross-validation score
+            cv_scores = cross_val_score(model, self.X_train_vec, self.y_train, 
+                                       cv=5, scoring='accuracy')
+            
+            # Store results
+            self.results[name] = {
+                'model': model,
+                'train_accuracy': train_acc,
+                'test_accuracy': test_acc,
+                'cv_mean': cv_scores.mean(),
+                'cv_std': cv_scores.std(),
+                'predictions': test_pred
+            }
+            
+            print(f"  Train Accuracy: {train_acc:.4f}")
+            print(f"  Test Accuracy: {test_acc:.4f}")
+            print(f"  CV Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+    
+    def hyperparameter_tuning(self, model_name='Logistic Regression'):
+        """
+        Perform hyperparameter tuning for the best model.
+        """
+        print(f"\nPerforming hyperparameter tuning for {model_name}...")
+        
+        if model_name == 'Logistic Regression':
+            param_grid = {
+                'C': [0.1, 1, 10],
+                'penalty': ['l2'],
+                'solver': ['lbfgs', 'liblinear']
+            }
+            model = LogisticRegression(max_iter=1000, random_state=42)
+        
+        elif model_name == 'Random Forest':
+            param_grid = {
+                'n_estimators': [50, 100, 200],
+                'max_depth': [10, 20, None],
+                'min_samples_split': [2, 5]
+            }
+            model = RandomForestClassifier(random_state=42)
+        
+        else:
+            print(f"Hyperparameter tuning not configured for {model_name}")
+            return
+        
+        # Grid search
+        grid_search = GridSearchCV(
+            model, param_grid, cv=3, scoring='accuracy', 
+            n_jobs=-1, verbose=1
+        )
+        
+        grid_search.fit(self.X_train_vec, self.y_train)
+        
+        print(f"\nBest parameters: {grid_search.best_params_}")
+        print(f"Best CV score: {grid_search.best_score_:.4f}")
+        
+        # Update results with tuned model
+        test_pred = grid_search.predict(self.X_test_vec)
+        test_acc = accuracy_score(self.y_test, test_pred)
+        
+        self.results[f'{model_name} (Tuned)'] = {
+            'model': grid_search.best_estimator_,
+            'test_accuracy': test_acc,
+            'predictions': test_pred,
+            'best_params': grid_search.best_params_
+        }
+        
+        print(f"Tuned Test Accuracy: {test_acc:.4f}")
+    
+    def evaluate_models(self):
+        """
+        Generate detailed evaluation metrics and visualizations.
+        """
+        print("\n" + "="*70)
+        print("MODEL EVALUATION SUMMARY")
+        print("="*70)
+        
+        # Create comparison DataFrame
+        comparison_data = []
+        for name, results in self.results.items():
+            if 'cv_mean' in results:
+                comparison_data.append({
+                    'Model': name,
+                    'Train Acc': results['train_accuracy'],
+                    'Test Acc': results['test_accuracy'],
+                    'CV Mean': results['cv_mean'],
+                    'CV Std': results['cv_std']
+                })
+        
+        comparison_df = pd.DataFrame(comparison_data)
+        print("\n", comparison_df.to_string(index=False))
+        
+        # Find best model
+        best_model_name = max(self.results.items(), 
+                             key=lambda x: x[1]['test_accuracy'])[0]
+        best_results = self.results[best_model_name]
+        
+        print(f"\n{'='*70}")
+        print(f"BEST MODEL: {best_model_name}")
+        print(f"{'='*70}")
+        
+        # Detailed classification report
+        print("\nClassification Report:")
+        print(classification_report(self.y_test, best_results['predictions']))
+        
+        return best_model_name
+    
+    def visualize_results(self):
+        """
+        Create visualizations of the results.
+        """
+        print("\nGenerating visualizations...")
+        
+        fig = plt.figure(figsize=(16, 12))
+        
+        # 1. Model Comparison
+        ax1 = plt.subplot(2, 3, 1)
+        models = [name for name in self.results.keys() if 'cv_mean' in self.results[name]]
+        test_accs = [self.results[name]['test_accuracy'] for name in models]
+        
+        colors = plt.cm.viridis(np.linspace(0, 1, len(models)))
+        bars = ax1.barh(models, test_accs, color=colors)
+        ax1.set_xlabel('Test Accuracy')
+        ax1.set_title('Model Performance Comparison', fontweight='bold')
+        ax1.set_xlim([0, 1])
+        
+        # Add value labels
+        for i, (bar, acc) in enumerate(zip(bars, test_accs)):
+            ax1.text(acc + 0.01, i, f'{acc:.3f}', va='center')
+        
+        # 2. Confusion Matrix (Best Model)
+        best_model_name = max(self.results.items(), 
+                             key=lambda x: x[1]['test_accuracy'])[0]
+        best_pred = self.results[best_model_name]['predictions']
+        
+        ax2 = plt.subplot(2, 3, 2)
+        cm = confusion_matrix(self.y_test, best_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax2,
+                   xticklabels=sorted(self.y_test.unique()),
+                   yticklabels=sorted(self.y_test.unique()))
+        ax2.set_title(f'Confusion Matrix - {best_model_name}', fontweight='bold')
+        ax2.set_ylabel('True Label')
+        ax2.set_xlabel('Predicted Label')
+        
+        # 3. Sentiment Distribution
+        ax3 = plt.subplot(2, 3, 3)
+        sentiment_counts = self.data['sentiment'].value_counts()
+        colors_pie = ['#ff9999', '#66b3ff', '#99ff99']
+        wedges, texts, autotexts = ax3.pie(sentiment_counts.values, 
+                                            labels=sentiment_counts.index,
+                                            autopct='%1.1f%%',
+                                            colors=colors_pie,
+                                            startangle=90)
+        ax3.set_title('Sentiment Distribution in Dataset', fontweight='bold')
+        
+        # 4. Cross-Validation Scores
+        ax4 = plt.subplot(2, 3, 4)
+        models_cv = [name for name in self.results.keys() if 'cv_mean' in self.results[name]]
+        cv_means = [self.results[name]['cv_mean'] for name in models_cv]
+        cv_stds = [self.results[name]['cv_std'] for name in models_cv]
+        
+        ax4.errorbar(range(len(models_cv)), cv_means, yerr=cv_stds, 
+                    fmt='o-', capsize=5, capthick=2, markersize=8)
+        ax4.set_xticks(range(len(models_cv)))
+        ax4.set_xticklabels(models_cv, rotation=45, ha='right')
+        ax4.set_ylabel('Accuracy')
+        ax4.set_title('Cross-Validation Scores (Mean ± Std)', fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        ax4.set_ylim([0, 1])
+        
+        # 5. Review Length Distribution by Sentiment
+        ax5 = plt.subplot(2, 3, 5)
+        for sentiment in self.data['sentiment'].unique():
+            data_subset = self.data[self.data['sentiment'] == sentiment]['review_length']
+            ax5.hist(data_subset, alpha=0.5, label=sentiment, bins=15)
+        ax5.set_xlabel('Review Length (words)')
+        ax5.set_ylabel('Frequency')
+        ax5.set_title('Review Length Distribution by Sentiment', fontweight='bold')
+        ax5.legend()
+        ax5.grid(True, alpha=0.3)
+        
+        # 6. Feature Importance (if Random Forest)
+        ax6 = plt.subplot(2, 3, 6)
+        if 'Random Forest' in self.results:
+            rf_model = self.results['Random Forest']['model']
+            importances = rf_model.feature_importances_
+            indices = np.argsort(importances)[-10:]  # Top 10 features
+            feature_names = np.array(self.vectorizer.get_feature_names_out())
+            
+            ax6.barh(range(10), importances[indices], color='teal')
+            ax6.set_yticks(range(10))
+            ax6.set_yticklabels(feature_names[indices])
+            ax6.set_xlabel('Importance')
+            ax6.set_title('Top 10 Important Features (Random Forest)', fontweight='bold')
+        else:
+            ax6.text(0.5, 0.5, 'Feature importance\nnot available', 
+                    ha='center', va='center', transform=ax6.transAxes)
+            ax6.set_title('Feature Importance', fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig('/mnt/user-data/outputs/sentiment_analysis_results.png', 
+                    dpi=300, bbox_inches='tight')
+        print("Visualization saved to sentiment_analysis_results.png")
+        
+    def predict_sentiment(self, text, model_name=None):
+        """
+        Predict sentiment for new text.
+        """
+        if model_name is None:
+            # Use best model
+            model_name = max(self.results.items(), 
+                           key=lambda x: x[1]['test_accuracy'])[0]
+        
+        # Preprocess
+        cleaned_text = self.preprocess_text(text)
+        
+        # Vectorize
+        text_vec = self.vectorizer.transform([cleaned_text])
+        
+        # Predict
+        model = self.results[model_name]['model']
+        prediction = model.predict(text_vec)[0]
+        
+        # Get probability if available
+        if hasattr(model, 'predict_proba'):
+            proba = model.predict_proba(text_vec)[0]
+            class_proba = dict(zip(model.classes_, proba))
+            return prediction, class_proba
+        
+        return prediction, None
+    
+    def run_complete_pipeline(self):
+        """
+        Execute the complete ML pipeline.
+        """
+        print("\n" + "="*70)
+        print("SENTIMENT ANALYSIS ML PROJECT - COMPLETE PIPELINE")
+        print("="*70)
+        
+        # 1. Generate data
+        self.generate_sample_data(n_samples=2000)
+        
+        # 2. Prepare data
+        self.prepare_data()
+        
+        # 3. Train models
+        self.train_models()
+        
+        # 4. Hyperparameter tuning
+        self.hyperparameter_tuning('Logistic Regression')
+        
+        # 5. Evaluate
+        best_model = self.evaluate_models()
+        
+        # 6. Visualize
+        self.visualize_results()
+        
+        # 7. Demo predictions
+        print("\n" + "="*70)
+        print("SAMPLE PREDICTIONS")
+        print("="*70)
+        
+        test_reviews = [
+            "This product is absolutely amazing! Best purchase ever.",
+            "Terrible quality. Waste of money. Very disappointed.",
+            "It's okay. Nothing special but it works fine."
+        ]
+        
+        for review in test_reviews:
+            pred, proba = self.predict_sentiment(review)
+            print(f"\nReview: '{review}'")
+            print(f"Predicted Sentiment: {pred}")
+            if proba:
+                print(f"Probabilities: {proba}")
+        
+        print("\n" + "="*70)
+        print("PROJECT COMPLETED SUCCESSFULLY!")
+        print("="*70)
+        print("\nKey Achievements:")
+        print("✓ Data generation and preprocessing")
+        print("✓ Multiple ML models trained and compared")
+        print("✓ Hyperparameter tuning performed")
+        print("✓ Comprehensive evaluation metrics")
+        print("✓ Professional visualizations created")
+        print("✓ Production-ready prediction pipeline")
+
+
+def main():
+    """
+    Main execution function.
+    """
+    # Create project instance
+    project = SentimentAnalysisProject()
+    
+    # Run complete pipeline
+    project.run_complete_pipeline()
+    
+    # Save the model for future use
+    print("\nProject artifacts can be saved using pickle or joblib for deployment.")
+    
+
+if __name__ == "__main__":
+    main()
